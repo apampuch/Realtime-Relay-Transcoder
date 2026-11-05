@@ -1,0 +1,560 @@
+#include "glib-object.h"
+#include "gst/gst.h"
+#include "gst/gstelement.h"
+#include "gst/gstpipeline.h"
+#include "gst/gstutils.h"
+#include <jansson.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#include "pipeline.h"
+
+/* what this is mostly going to do is listen for sockets and then load/play/pause/whatever */
+
+/* =====================================================
+ * Setup
+ * ===================================================== */
+
+#define SOCKET_PATH "/home/weanoob/sockets/relay.sock"  // "/sockets/relay.sock"
+
+static gboolean accept_callback(GIOChannel *source, GIOCondition condition, gpointer data);
+static gboolean client_callback(GIOChannel *source, GIOCondition condition, gpointer data);
+static gboolean playing_position_update(gpointer data);
+
+struct sockaddr_un server_addr;
+int server_socket;
+
+typedef struct {
+    StreamComponents *components;
+    GIOChannel *client_channel;
+} ClientData;
+
+const char *VALID_VIDEO_TYPES[] = {"mp4"};
+const int VALID_TYPES_LEN = 1;
+
+/* =====================================================
+ * Helper Functions
+ * ===================================================== */
+
+gboolean ends_with(const char *str, const char *suffix)
+{
+    size_t len = strlen(str);
+    size_t suffix_len = strlen(suffix);
+
+    if (suffix_len > len)
+        return FALSE;
+
+    return strcmp(str + len - suffix_len, suffix) == 0;
+}
+
+// returns TRUE if the json has an id property and if its value is a number
+// returns FALSE if not
+gboolean check_for_id(json_t *j) {
+    json_t *val = json_object_get(j, "id");
+
+    if (!val) {
+        return FALSE;
+    } else if (!json_is_number(val)) {
+        return FALSE;
+    } else {
+        return TRUE;
+    }
+}
+
+/* =====================================================
+ * Connection Functions
+ * ===================================================== */
+
+void setup_socket(StreamComponents *components) {
+    // zero the memory
+    memset(&server_addr, 0, sizeof(server_addr));
+
+    // make the socket
+    server_socket = socket(AF_UNIX, SOCK_STREAM, 0);
+
+    server_addr.sun_family = AF_UNIX;
+    strcpy(server_addr.sun_path, SOCKET_PATH);
+
+    int slen = sizeof(server_addr);
+    
+    // unlink before binding just in case there's one that didn't clear
+    unlink(server_addr.sun_path);
+    int bind_success = bind(server_socket, (struct sockaddr *) &server_addr, slen);
+
+    // may need to chmod the socket
+    chmod(SOCKET_PATH, 0666);
+
+    if (bind_success != 0) {
+        perror("Bind not successful: ");
+        close(server_socket);
+        exit(1);
+    }
+
+    // setup io channel and callback
+    GIOChannel *channel = g_io_channel_unix_new(server_socket);
+    g_io_add_watch(channel, G_IO_IN, accept_callback, components);
+
+    listen(server_socket, 5);
+}
+
+void close_socket() {
+    close(server_socket);
+    unlink(server_addr.sun_path);
+}
+
+/* =====================================================
+ * Callbacks
+ * ===================================================== */
+
+/* This function is the callback called when any data is received on the socket. */
+static gboolean accept_callback(GIOChannel *source, GIOCondition condition, gpointer data) {
+    // make the ClientData struct to pass multiple pointers in
+    ClientData *cd = calloc(1, sizeof(*cd));
+
+    cd->components = (StreamComponents*) data;
+
+    // keeping all this in case it's possible to just connect directly to this without the bridge
+    struct sockaddr_un client_addr;
+    memset(&client_addr, 0, sizeof(client_addr));
+    socklen_t clen = sizeof(client_addr);
+
+    int fd = g_io_channel_unix_get_fd(source);
+    int client_fd = accept(fd, (struct sockaddr *) &client_addr, &clen);
+
+    cd->client_channel = g_io_channel_unix_new(client_fd);
+
+    g_io_add_watch(
+        cd->client_channel,
+        G_IO_IN | G_IO_HUP | G_IO_ERR,
+        client_callback,
+        data
+    );
+
+    g_timeout_add(
+        500, 
+        playing_position_update, 
+        cd
+    );
+
+    g_print("Accepted client connection.\n");
+
+    return TRUE;
+}
+
+/* The big one that sorts everything. */
+static gboolean client_callback(GIOChannel *source, GIOCondition condition, gpointer data) {
+    // return FALSE removes it from the loop
+    if (condition & G_IO_HUP) {
+        fprintf(stderr, "Client disconnected.\n");
+        return FALSE;
+    } else if (condition & G_IO_ERR) {
+        fprintf(stderr, "Client error.");
+        return FALSE;
+    }
+
+    // anything else is G_IO_IN, so read from the socket
+    GError *socket_error = NULL;
+    gchar *line = NULL;
+    gsize line_len;
+
+    GIOStatus status = g_io_channel_read_line(source,
+        &line,
+        &line_len,
+        NULL,
+        &socket_error);
+
+    if (status == G_IO_STATUS_ERROR) {
+        fprintf(stderr, "Message error.\n");
+        return TRUE;
+    }
+
+    // we might not have a full line with a newline at the end
+    // maybe check for that
+
+    StreamComponents *components = data;
+    GstElement *pipeline = components->pipeline;
+    json_t *root;
+    json_error_t json_error;
+
+    // load json
+    root = json_loads(line, 0, &json_error);
+
+    // check json for errors
+    if (!root)
+    {
+        fprintf(stderr, "Error with json:\n%s", line);
+        return TRUE;
+    }
+
+    if (!json_is_object(root)) {
+        fprintf(stderr, "error: root is not an array\n");
+        json_decref(root);
+        return TRUE;
+    }
+
+    // parse the actual command
+    json_t *cmd_obj = json_object_get(root, "command");
+
+    if (!json_is_string(cmd_obj)) {
+        fprintf(stderr, "error: command is not a string.\n");
+        json_decref(root);
+        return TRUE;
+    }
+
+    const char *cmd = json_string_value(cmd_obj);
+    char response_buf[256];
+
+    // get the id check out of the way
+    if (!check_for_id(root)) {
+        fprintf(stderr, "Toggle json has no id element.");
+        return TRUE;
+    }
+
+    gint64 id = json_integer_value(json_object_get(root, "id"));
+
+    /* HERE IS WHERE WE ACTUALLY SORT BY COMMAND */
+    if (strcmp(cmd, "play") == 0) {
+
+        gst_element_set_state(pipeline, GST_STATE_PLAYING);
+        snprintf(response_buf, sizeof(response_buf), "Playing.\n");
+
+    } else if (strcmp(cmd, "pause") == 0) {
+
+        gst_element_set_state(pipeline, GST_STATE_PAUSED);
+        snprintf(response_buf, sizeof(response_buf), "Paused.\n");
+
+    } else if (strcmp(cmd, "get_duration") == 0) {
+
+        gint64 duration = 0;
+
+        gst_element_query_duration(pipeline, GST_FORMAT_TIME, &duration);
+
+        // convert to milliseconds
+        duration /= GST_MSECOND;
+
+        snprintf(response_buf, sizeof(response_buf), "{\"id\": %ld, \"stream_duration\": %ld}\n", id, duration);
+
+    } else if (strcmp(cmd, "toggle") == 0) {
+        GstState current_state, pending_state, effective_state;
+
+        gst_element_get_state(pipeline, &current_state, &pending_state, GST_SECOND);
+
+        if (pending_state != GST_STATE_VOID_PENDING) 
+            effective_state = pending_state;
+        else
+            effective_state = current_state;
+
+        if (effective_state == GST_STATE_PLAYING) {
+            gst_element_set_state(pipeline, GST_STATE_PAUSED);
+            snprintf(response_buf, sizeof(response_buf), "{\"id\": %ld, \"new_state\": \"paused\"}\n", id);
+        } else {
+            gst_element_set_state(pipeline, GST_STATE_PLAYING);
+            snprintf(response_buf, sizeof(response_buf), "{\"id\": %ld, \"new_state\": \"playing\"}\n", id);
+        }
+    } else if (strcmp(cmd, "seek") == 0) {
+
+        /*
+          Seek must have two more options:
+          seek_time: integer in milliseconds
+          seek_type: str that equals forward, backward, or absolute
+
+          seek_type changes how seek_time works
+          forward or backward moves the current position forward or backward that much
+          absolute sets the current position to that time
+        */
+
+        // WebRTC basically won't let us seek while paused, so we set the state to playing after a seek
+        GstState current_state, pending_state, effective_state;
+
+        gst_element_get_state(pipeline, &current_state, &pending_state, GST_SECOND);
+
+        // printf("%u\n", current_state);
+
+        if (current_state != GST_STATE_PLAYING) {
+            gst_element_set_state(pipeline, GST_STATE_PLAYING);
+        }
+
+        // get the seek arg
+        json_t *seek_time_json = json_object_get(root, "seek_time");
+        json_t *seek_type_json = json_object_get(root, "seek_type");
+
+        if (!json_is_integer(seek_time_json)) {
+            fprintf(stderr, "error: seek time is not an integer.\n");
+            json_decref(root);
+            return TRUE;
+        }
+
+        if (!json_is_string(seek_type_json)) {
+            fprintf(stderr, "error: seek type is not an string.\n");
+            json_decref(root);
+            return TRUE;
+        }
+
+        const char *seek_type = json_string_value(seek_type_json);
+        gint64 seek_time = json_integer_value(seek_time_json) * GST_MSECOND;
+
+        gint64 current_position;
+        gint64 new_position;
+        gst_element_query_position(pipeline, GST_FORMAT_TIME, &current_position);
+
+        if (strcmp(seek_type, "forward") == 0) {
+            new_position = current_position + seek_time;
+        } else if (strcmp(seek_type, "backward") == 0) {
+            new_position = current_position - seek_time;
+        } else if (strcmp(seek_type, "absolute") == 0) {
+            new_position = seek_time;
+        } else {
+            g_printerr("Invalid seek type.");
+        }
+
+        gint64 duration;
+        gst_element_query_duration(pipeline, GST_FORMAT_TIME, &duration);
+
+        // cap to duration
+        if (new_position > duration)
+            new_position = duration;
+
+        // cap to 0
+        if (new_position < 0)
+            new_position = 0;
+
+        gst_element_seek_simple(
+            pipeline,
+            GST_FORMAT_TIME,
+            GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_SNAP_BEFORE | GST_SEEK_FLAG_SEGMENT,
+            new_position
+        );
+
+        // convert seek time to back milliseconds before sending
+        seek_time /= GST_MSECOND;
+
+        snprintf(response_buf, sizeof(response_buf), "{\"id\": %ld, \"seek_pos\": \"%ld\"}\n", id, seek_time);
+
+    } else if (strcmp(cmd, "start_video") == 0) {
+
+        // starts the chosen video file with the key "file", value is the filename
+        // does not send ID because it will be broadcast to all watchers
+        // should be sent with a bogus ID just to pass the ID check though
+
+        // get the file arg
+        json_t *file_obj = json_object_get(root, "file");
+        json_t *addr_obj = json_object_get(root, "address");
+
+        if (!json_is_string(file_obj)) {
+            fprintf(stderr, "error: filename is not a string\n");
+            json_decref(root);
+            return TRUE;
+        }
+
+        if (!json_is_string(addr_obj)) {
+            fprintf(stderr, "error: server address is not a string\n");
+            json_decref(root);
+            return TRUE;
+        }
+
+        // load the new file and change state to playing
+        char filename[2048];  // probably a safe maximum length
+        char  address[2048];
+        snprintf(filename, sizeof(filename), "%s", json_string_value(file_obj));
+        snprintf(filename, sizeof(address),  "%s", json_string_value(addr_obj));
+
+        gst_element_set_state(pipeline, GST_STATE_NULL);
+        gst_element_get_state(pipeline, NULL, NULL, GST_CLOCK_TIME_NONE);
+
+        build_pipeline(components, filename, address);
+
+        // start playing
+        // initial_seek_flag = TRUE;
+        gst_element_set_state(components->pipeline, GST_STATE_PLAYING);
+
+        // send the duration of the new file
+        gint64 duration = 0;
+
+        gst_element_query_duration(pipeline, GST_FORMAT_TIME, &duration);
+
+        // convert to milliseconds
+        duration /= GST_MSECOND;
+
+        json_t *response_root = json_object();
+
+        json_object_set_new(response_root, "stream_duration", json_integer(duration));
+        json_object_set_new(response_root, "connection_cmd", json_string("connect"));
+
+        char *dump = json_dumps(response_root, 0);
+        snprintf(response_buf, sizeof(response_buf), "%s\n", dump);
+        free(dump);
+
+    } else if (strcmp(cmd, "list_files") == 0) {
+
+        // get all the files and send their names in a json array
+        json_t *response_root = json_object();
+        json_t *paths = json_array();
+        json_object_set_new(response_root, "id", json_integer(id));
+
+        // open videos folder
+        DIR *videos_dir = opendir("/videos");
+
+        if (videos_dir == NULL) {
+            perror("Could not open videos directory.");
+            return 1;
+        }
+
+        struct dirent *entry;
+
+        // iterate through dir, filter for files with the correct extensions
+        while ((entry = readdir(videos_dir)) != NULL) {
+            for (int i=0; i<VALID_TYPES_LEN; i++) {
+                if (ends_with(entry->d_name, VALID_VIDEO_TYPES[i])) {
+                    json_array_append_new(paths, json_string(entry->d_name));
+                }
+            }
+        }
+
+        // send to the json and response buffer
+        json_object_set_new(response_root, "paths", paths);
+
+        char *dump = json_dumps(response_root, 0);
+        snprintf(response_buf, sizeof(response_buf), "%s\n", dump);
+        free(dump);
+
+        json_decref(paths);
+        json_decref(response_root);
+
+    } else if (strcmp(cmd, "get_play_state") == 0) {
+
+        // this seems to be unused? it doesn't return anything
+        GstState current_state;
+        GstState pending_state;
+
+        gst_element_get_state(pipeline, &current_state, &pending_state, GST_SECOND);
+
+    } else if (strcmp(cmd, "connect") == 0) {
+
+        // called when client first connects to the websocket
+
+        // if we're playing, tell to start playing
+        GstState current_state, pending_state, effective_state;
+
+        gst_element_get_state(pipeline, &current_state, &pending_state, GST_SECOND);
+
+        if (pending_state != GST_STATE_VOID_PENDING) 
+            effective_state = pending_state;
+        else
+            effective_state = current_state;
+
+        json_t *response_root = json_object();
+
+        if (effective_state == GST_STATE_PLAYING) {
+            json_object_set_new(response_root, "connection_cmd", json_string("connect"));
+        } else {
+            // does nothing
+            json_object_set_new(response_root, "connection_cmd", json_string("null_op"));
+        }
+
+        char *dump = json_dumps(response_root, 0);
+        snprintf(response_buf, sizeof(response_buf), "%s\n", dump);
+        free(dump);
+
+    } else {
+
+        snprintf(response_buf, sizeof(response_buf), "{\"id\": %ld, \"error\": \"command %s is not valid\"}\n", id, cmd);
+
+    }
+
+    GError *write_error = NULL;
+    gsize bytes_written;
+
+    // write the response to the socket
+    status = g_io_channel_write_chars(
+        source,
+        response_buf,
+        -1,
+        &bytes_written,
+        &write_error
+    );
+
+    // how tf do I handle write errors, if at all
+    if (write_error) {
+        fprintf(stderr, "Error writing message to socket.");
+    }
+
+    g_io_channel_flush(source, &write_error );
+
+    // write(client_socket, response_buf, strlen(response_buf));
+    json_decref(root);
+    return TRUE;
+}
+
+static gboolean playing_position_update(gpointer data) {
+    ClientData *cd = (ClientData*) data;
+
+    // don't report if we don't have any components or pipeline
+    if (cd->components == NULL)
+        return TRUE;
+    if (cd->components->pipeline == NULL)
+        return TRUE;
+
+    // this might need to be more sophisticated
+    GstState state_check;
+    GstStateChangeReturn r = gst_element_get_state(cd->components->pipeline, &state_check, NULL, GST_SECOND);
+    // g_print("state return: %d, state: %d\n", r, state_check);
+    // don't report if we're not playing or paused
+    if (r != GST_STATE_CHANGE_SUCCESS || !(state_check == GST_STATE_PLAYING || state_check == GST_STATE_PAUSED))
+        return TRUE;
+
+
+    gint64 play_pos;
+    char response_buf[256];
+
+    // get the timestamp
+    gst_element_query_position(cd->components->pipeline, GST_FORMAT_TIME, &play_pos);
+
+    // convert to milliseconds
+    play_pos /= GST_MSECOND;
+
+    // build the json
+    json_t *root = json_object();
+    json_object_set_new(root, "update_type", json_string("position"));
+    json_object_set_new(root, "new_position", json_integer(play_pos));
+
+    snprintf(response_buf, sizeof(response_buf), "%s\n", json_dumps(root, JSON_COMPACT));
+
+    GError *write_error = NULL;
+    gsize bytes_written;
+    
+    GIOStatus status = g_io_channel_write_chars(
+        cd->client_channel,
+        response_buf,
+        -1,
+        &bytes_written,
+        &write_error
+    );
+
+    if (write_error) {
+        fprintf(stderr,"Socket write error: %s\n", write_error->message);
+    }
+
+    GError *flush_error = NULL;
+    g_io_channel_flush(cd->client_channel, &write_error);
+
+    if (flush_error) {
+        fprintf(stderr, "Flush error: %s\n", flush_error->message);
+    }
+    json_decref(root);
+
+    return TRUE;
+}
+
+/* =====================================================
+ * Commands
+ * ===================================================== */
+
+ void get_duration(char* response_buf, size_t maxlen, GstElement pipeline, json_t j) {
+
+ }

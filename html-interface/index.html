@@ -1,0 +1,153 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RR Transcoder</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+
+    <header class="app-header">
+        <h1>RR Transcoder</h1>
+        <span class="app-version">TRANSCODER</span>
+    </header>
+
+    <main>
+
+        <!-- Input file -->
+        <section class="panel">
+            <div class="form-group">
+                <label for="file-path">Input file path</label>
+                <input
+                    type="text"
+                    id="file-path"
+                    placeholder="/path/to/video.mp4"
+                >
+            </div>
+        </section>
+
+
+        <!-- Encoding settings -->
+        <section class="panel">
+            <h2>Encoding Settings</h2>
+
+            <div class="settings-grid">
+
+                <label for="codec">Codec</label>
+                <select id="codec"></select>
+
+                <label for="preset">Preset</label>
+                <select id="preset"></select>
+
+                <label for="bitrate">Bitrate</label>
+                <div class="input-with-unit">
+                    <input
+                        type="number"
+                        id="bitrate"
+                        value="10"
+                        min="0.1"
+                        max="100"
+                        step="0.5"
+                    >
+                    <span>Mbps</span>
+                </div>
+
+            </div>
+        </section>
+
+
+        <!-- Playback -->
+        <section class="panel">
+            <h2>Playback</h2>
+
+            <div class="seek-row">
+                <input
+                    type="range"
+                    id="seek-bar"
+                    min="0"
+                    max="100"
+                    value="0"
+                    step="0.1"
+                >
+
+                <span id="time-display">00:00 / 00:00</span>
+            </div>
+
+            <div class="playback-controls">
+
+                <button id="backward-button" class="icon-button"
+                        title="Back 5 seconds" aria-label="Back 5 seconds">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M11 19L2 12l9-7v14z"/>
+                        <path d="M22 19l-9-7 9-7v14z"/>
+                    </svg>
+                    <span>5s</span>
+                </button>
+
+                <button id="play-button" class="icon-button play-button"
+                        title="Play" aria-label="Play">
+                    <svg viewBox="0 0 24 24" id="play-icon">
+                        <path d="M7 3v18l14-9z"/>
+                    </svg>
+                </button>
+
+                <button id="forward-button" class="icon-button"
+                        title="Forward 5 seconds" aria-label="Forward 5 seconds">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M2 5l9 7-9 7V5z"/>
+                        <path d="M13 5l9 7-9 7V5z"/>
+                    </svg>
+                    <span>5s</span>
+                </button>
+
+            </div>
+        </section>
+
+
+        <!-- Server -->
+        <section class="panel">
+            <h2>Server</h2>
+
+            <div class="server-row">
+
+                <input
+                    type="text"
+                    id="server-url"
+                    value="http://localhost"
+                    placeholder="http://localhost"
+                >
+
+                <button id="connect-button">Connect</button>
+
+            </div>
+        </section>
+
+
+        <!-- Log -->
+        <section class="panel log-panel">
+            <div class="log-header">
+                <h2>Log</h2>
+                <button id="clear-log-button" class="secondary-button">
+                    Clear
+                </button>
+            </div>
+
+            <div id="log-output" class="log-output">
+            </div>
+        </section>
+
+    </main>
+
+    <footer>
+        RR Transcoder
+    </footer>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
