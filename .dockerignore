@@ -1,0 +1,4 @@
+src/
+.clangd
+.gitignore
+makefile
