@@ -1,5 +1,6 @@
 
 #include "glib-object.h"
+#include "gst/gstcaps.h"
 #include "gst/gstpipeline.h"
 #include "gst/gstutils.h"
 #include <stdio.h>
@@ -115,6 +116,7 @@ static void check_components(StreamComponents *components) {
     if (!components->audio_queue)        { g_printerr("Failed to create component: audio_queue\n");      exit(EXIT_FAILURE); }
     if (!components->audio_identity)     { g_printerr("Failed to create component: audio_identity\n");   exit(EXIT_FAILURE); }
     if (!components->audio_encoder)      { g_printerr("Failed to create component: audio_encoder\n");    exit(EXIT_FAILURE); }
+    if (!components->audio_caps_out)     { g_printerr("Failed to create component: audio_caps_out\n");   exit(EXIT_FAILURE); }
     if (!components->audio_parse)        { g_printerr("Failed to create component: audio_parse\n");      exit(EXIT_FAILURE); }
     if (!components->whip_sink)          { g_printerr("Failed to create component: whip_sink\n");        exit(EXIT_FAILURE); }
 }
@@ -139,6 +141,7 @@ int build_pipeline(StreamComponents *components, char *filename, char *server_ad
     components->audio_queue      = gst_element_factory_make("queue2", "audio_queue");
     components->audio_identity   = gst_element_factory_make("identity", "audio_identity");
     components->audio_encoder    = gst_element_factory_make("opusenc", "audio_encoder");         // TODO allow for different codecs
+    components->audio_caps_out   = gst_element_factory_make("capsfilter", "audio_caps_out");
     components->audio_parse      = gst_element_factory_make("opusparse", "audio_parse");
     components->whip_sink        = gst_element_factory_make("whipclientsink", "sink");
 
@@ -160,6 +163,7 @@ int build_pipeline(StreamComponents *components, char *filename, char *server_ad
         components->audio_queue,
         components->audio_identity,
         components->audio_encoder,
+        components->audio_caps_out,
         components->audio_parse,
         components->whip_sink,
         NULL
@@ -197,6 +201,7 @@ int build_pipeline(StreamComponents *components, char *filename, char *server_ad
         components->audio_queue,
         components->audio_identity,
         components->audio_encoder,
+        components->audio_caps_out,
         components->audio_parse,
         components->whip_sink,
         NULL);
@@ -258,28 +263,37 @@ int build_pipeline(StreamComponents *components, char *filename, char *server_ad
     );
     g_object_set(
         components->audio_encoder,
+        "bitrate", 92000,
         NULL
     );
 
-    // configure video caps filters
-    GstCaps *caps_in = gst_caps_from_string(
+    // configure video and audio caps filters
+    GstCaps *v_caps_in = gst_caps_from_string(
         "video/x-raw,format=I420"
     );
     g_object_set(
         components->video_caps_in,
-        "caps", caps_in,
+        "caps", v_caps_in,
         NULL);
-    gst_caps_unref(caps_in);
+    gst_caps_unref(v_caps_in);
 
-    GstCaps *caps_out = gst_caps_from_string(
+    GstCaps *v_caps_out = gst_caps_from_string(
         "video/x-h264, profile=baseline, level=(string)4.1"
     );
     g_object_set(
         components->video_caps_out,
-        "caps", caps_out,
+        "caps", v_caps_out,
         NULL
     );
-    gst_caps_unref(caps_out);
+    gst_caps_unref(v_caps_out);
+
+    GstCaps *a_caps_out = gst_caps_new_simple("audio/x-raw",
+        "channels", G_TYPE_INT, 2,
+        NULL);
+    g_object_set(components->audio_caps_out, 
+        "caps", a_caps_out,
+        NULL);
+    gst_caps_unref(a_caps_out);
 
     // inject SPS/PPS
     g_object_set(

@@ -1,7 +1,5 @@
-#include "glib-object.h"
-#include "gst/gst.h"
+
 #include "gst/gstelement.h"
-#include "gst/gstpipeline.h"
 #include "gst/gstutils.h"
 #include <jansson.h>
 #include <stddef.h>

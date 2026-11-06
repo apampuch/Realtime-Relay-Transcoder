@@ -13,6 +13,7 @@ typedef struct _StreamComponents {
     GstElement *audio_queue;
     GstElement *audio_identity;
     GstElement *audio_encoder;
+    GstElement *audio_caps_out;
     GstElement *audio_parse;
     GstElement *whip_sink;
 } StreamComponents;
