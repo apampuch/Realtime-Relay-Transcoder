@@ -1,0 +1,13 @@
+{
+  "name": "rr-transcoder-webui",
+  "version": "1.0.0",
+  "description": "Web interface for Realtime Relay transcoder.",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}

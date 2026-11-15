@@ -1,5 +1,6 @@
 .vscode/
 .clangd
+node_modules/
 
 gst-plugins-rs/
 gstreamer/
