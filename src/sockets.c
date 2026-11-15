@@ -19,7 +19,7 @@
  * Setup
  * ===================================================== */
 
-#define SOCKET_PATH "/home/weanoob/sockets/relay.sock"  // "/sockets/relay.sock"
+#define SOCKET_PATH "/sockets/relay.sock"  // "/sockets/relay.sock"
 
 static gboolean accept_callback(GIOChannel *source, GIOCondition condition, gpointer data);
 static gboolean client_callback(GIOChannel *source, GIOCondition condition, gpointer data);
