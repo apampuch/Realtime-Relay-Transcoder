@@ -191,11 +191,20 @@ connectButton.addEventListener("click", () => {
 
     // TODO:
     // Establish connection to mediamtx server.
+    const send_obj = {
+        id: 0,
+        command: "connect"
+    };
     
+    send_to_server(send_obj);
 });
 
 ws.addEventListener("open", async () => {
     console.log("Connected to websocket.");
+});
+
+ws.addEventListener("message", async (event) => {
+    console.log(event.data);
 });
 
 /* =====================================================
