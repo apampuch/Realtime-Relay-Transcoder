@@ -1,9 +1,8 @@
+// import { ws_connect } from "./websockets";
 
 /* =====================================================
  * DOM references
  * ===================================================== */
-
-import { ws_connect } from "./websockets";
 
 const filePath = document.getElementById("file-path");
 
@@ -154,6 +153,8 @@ codecSelect.dispatchEvent(new Event("change"));
  * ===================================================== */
 
 connectButton.addEventListener("click", () => {
+    console.log("Clicked");
+
     const urlString = serverURL.value.trim();
 
     if (!urlString) {
@@ -183,10 +184,10 @@ connectButton.addEventListener("click", () => {
 
     if (!url.port) {
         // use default port
-        url.port = 8889;
+        url.port = "8889";
     }
 
-    log(`Connecting to ${url.protocol}//${url.host}:${port}${url.pathname}${url.search}${url.hash}...`);
+    log(`Connecting to ${url.protocol}//${url.host}:${url.port}${url.pathname}${url.search}${url.hash}...`);
 
     // TODO:
     // Establish connection to mediamtx server.
@@ -199,3 +200,4 @@ connectButton.addEventListener("click", () => {
  * ===================================================== */
 
 log("RR Transcoder initialized.", "success");
+console.log("Starting");
