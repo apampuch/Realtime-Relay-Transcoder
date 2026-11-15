@@ -1,4 +1,4 @@
-// import { ws_connect } from "./websockets";
+import { ws, random_id, send_to_server } from "./websockets.js";
 
 /* =====================================================
  * DOM references
@@ -194,10 +194,12 @@ connectButton.addEventListener("click", () => {
     
 });
 
+ws.addEventListener("open", async () => {
+    console.log("Connected to websocket.");
+});
 
 /* =====================================================
  * Initial state
  * ===================================================== */
 
 log("RR Transcoder initialized.", "success");
-console.log("Starting");

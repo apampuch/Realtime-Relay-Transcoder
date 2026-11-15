@@ -3,7 +3,7 @@ const protocol = window.location.protocol === "https:"
     : "ws:";
 const host = window.location.host;
 
-export var ws = new WebSocket(`${protocol}//${host}/ws`);
+export var ws = new WebSocket(`${protocol}//localhost:3000/`);
 
 export const pendingRequests = new Map();  // only the admin page deals with pending requests
 

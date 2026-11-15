@@ -3,7 +3,11 @@ set -e
 
 echo "Starting Node.js server..."
 node html-interface/server.js &
-NODE_PID=$!
+SERVER_PID=$!
+
+echo "Starting Node.js bridge..."
+node bridge/bridge.js &
+OTHER_SERVER_PID=$!
 
 echo "Waiting for Node.js server..."
 
@@ -15,7 +19,7 @@ done
 echo "Node.js server ready. Starting transcoder..."
 
 ./bin/rr-transcoder &
-C_PID=$!
+TRANSCODER_PID=$!
 
-# Wait for either process to exit
-wait -n $NODE_PID $C_PID
+# Wait for any process to exit
+wait -n $SERVER_PID $OTHER_SERVER_PID $TRANSCODER_PID
